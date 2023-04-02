@@ -1,0 +1,221 @@
+Queries PART 1 (Roll metrics)
+
+1) How Many total_rolls were ordered?
+
+SELECT COUNT(roll_id) AS total_rolls
+FROM customer_orders;
+
+
+2) How many unique customers orders?
+
+SELECT COUNT(DISTINCT customer_id) AS unique_customers
+FROM customer_orders;
+
+
+3) How many successful orders delivered by each driver?
+
+SELECT driver_id, SUM(successful_orders) AS successfull_orders FROM(
+SELECT *,
+CASE 
+	WHEN cancellation LIKE '%cancel%' THEN 0
+	ELSE 1
+END AS successful_orders FROM driver_order do
+) WHERE successful_orders=1
+GROUP BY driver_id
+
+
+4) How many each type of roll was ordered?
+
+SELECT roll_id, COUNT(roll_id) AS roll_eachtype
+FROM customer_orders
+GROUP BY roll_id 
+
+
+5) How many each type of roll was delivered?
+
+SELECT roll_id, COUNT(roll_id) AS roll_eachtype  
+FROM customer_orders co 
+WHERE order_id IN (
+SELECT order_id FROM(
+SELECT *,
+CASE 
+	WHEN cancellation LIKE '%cancel%' THEN 0
+	ELSE 1
+END AS roll_eachtype FROM driver_order do
+) WHERE roll_eachtype=1) GROUP BY roll_id 
+
+
+6) How many veg and non veg rolls were ordered by each customers
+
+SELECT a.*,b.roll_name FROM(
+SELECT customer_id,roll_id,COUNT(roll_id) AS roll_count
+FROM customer_orders
+GROUP BY roll_id,customer_id
+) a INNER JOIN rolls AS b 
+ON a.roll_id=b.roll_id;
+
+
+7) What is the maximum no. of rolls delivered in a single order
+
+SELECT * FROM(
+SELECT *,RANK() OVER(ORDER BY cnt DESC) AS rnk FROM(
+SELECT order_id, COUNT(roll_id) AS cnt FROM(
+SELECT * FROM customer_orders 
+WHERE order_id IN(
+SELECT order_id FROM(
+SELECT *,CASE 
+	WHEN cancellation LIKE '%cancel%' THEN 0
+	ELSE 1
+END AS roll_eachtype FROM driver_order)
+WHERE roll_eachtype=1)) GROUP BY order_id)) 
+WHERE rnk=1
+
+
+8) For each customers how many delivered rolls had atleast 1 change and how many had no change?
+
+WITH temp_customer_orders(order_id,customer_id,roll_id,not_include_items,extra_items_included,order_date) AS
+( SELECT order_id,customer_id,roll_id,CASE 
+	WHEN not_include_items IS NULL or not_include_items = "" or not_include_items = "NaN" THEN "No Change"
+	ELSE not_include_items
+END AS items_not_included,CASE 
+	WHEN extra_items_included IS NULL or extra_items_included = "" or extra_items_included = "NaN" THEN "No Change"
+	ELSE extra_items_included
+END AS new_extra_items_included,order_date FROM customer_orders),
+
+temp_driver_orders(order_id,driver_id,pickup_time,distance,duration,cancellation) AS
+(SELECT order_id,driver_id,pickup_time,distance,duration,CASE 
+	WHEN cancellation IN ('Cancellation','Customer Cancellation') THEN 0
+	ELSE 1
+	END AS newcancellation FROM driver_order)
+
+SELECT customer_id,change_or_nochange,COUNT(order_id) AS at_least_one_change FROM (
+SELECT *,CASE 
+	WHEN not_include_items = 'No Change' AND extra_items_included = 'No Change' Then 'no change'
+	ELSE 'change'
+END AS change_or_nochange FROM temp_customer_orders 
+WHERE order_id IN (SELECT order_id FROM temp_driver_orders
+WHERE cancellation = 1)) GROUP BY customer_id,change_or_nochange
+
+
+9) How many rolls were delivered that had both exclusions and extras
+
+WITH temp_customer_orders(order_id,customer_id,roll_id,not_include_items,extra_items_included,order_date) AS
+( SELECT order_id,customer_id,roll_id,CASE 
+	WHEN not_include_items IS NULL or not_include_items = "" or not_include_items = "NaN" THEN "NA"
+	ELSE not_include_items
+END AS items_not_included,CASE 
+	WHEN extra_items_included IS NULL or extra_items_included = "" or extra_items_included = "NaN" THEN "NA"
+	ELSE extra_items_included
+END AS new_extra_items_included,order_date FROM customer_orders),
+
+temp_driver_orders(order_id,driver_id,pickup_time,distance,duration,cancellation) AS
+( SELECT order_id,driver_id,pickup_time,distance,duration,CASE 
+	WHEN cancellation IN ('Cancellation','Customer Cancellation') THEN 0
+	ELSE 1
+	END AS newcancellation FROM driver_order)
+
+SELECT change_or_nochange, COUNT(change_or_nochange) AS no_of_rolls
+FROM( SELECT *,CASE 
+	WHEN not_include_items != 'NA' AND extra_items_included != 'NA' Then 'both excl & extras'
+	ELSE 'either excl or extras'
+END AS change_or_nochange FROM temp_customer_orders 
+WHERE order_id IN ( SELECT order_id FROM temp_driver_orders
+WHERE cancellation = 1)
+) GROUP BY change_or_nochange
+
+
+10) What was the total no. of rolls ordered for each hour of the day?
+|| --> used as CONCAT
+
+SELECT hours_frame, COUNT(order_id) as no_of_rolls FROM
+( SELECT *, CAST
+(strftime('%H', order_date) AS VARCHAR) 
+|| '-' || 
+CAST(strftime('%H', order_date)+1 AS VARCHAR) AS hours_frame
+FROM customer_orders co ) GROUP BY hours_frame
+
+
+11) What was the no. orders for each day of the week?
+
+SELECT day_of_the_week, COUNT(DISTINCT order_id) AS orders_each_day
+FROM
+(SELECT *,CASE CAST(strftime('%w', order_date) AS INTEGER)
+	  when 0 then 'Sunday'
+	  when 1 then 'Monday'
+	  when 2 then 'Tuesday'
+	  when 3 then 'Wednesday'
+	  when 4 then 'Thursday'
+	  when 5 then 'Friday'
+	  else 'Saturday' 
+  END AS day_of_the_week FROM customer_orders co)
+  GROUP BY day_of_the_week
+
+
+Queries PART 2 (Customer and Driver Experience)
+
+12) What was the average time in mins it took for each driver to arrive at the Roll Company HQ to pickup the order
+
+SELECT driver_id,ROUND(AVG(time_diff)) FROM
+(SELECT * FROM
+(SELECT *, (ROW_NUMBER() OVER(PARTITION BY order_id ORDER BY time_diff)) AS rnk
+FROM(
+SELECT a.*,b.driver_id,b.pickup_time,b.distance,b.duration,b.cancellation,
+Cast ((JulianDay(pickup_time) - JulianDay(order_date)) * 24 * 60 As Integer) AS time_diff  
+FROM customer_orders AS a INNER JOIN driver_order AS b 
+ON a.order_id = b.order_id 
+WHERE b.pickup_time IS NOT NULL
+)) WHERE rnk=1) GROUP BY driver_id
+
+
+13) Is there any relationship between the number of rolls and the time taken to prepare 
+
+SELECT COUNT(order_id) AS number_of_rolls,AVG(time_diff) AS time
+FROM (SELECT a.*,b.driver_id,b.pickup_time,b.distance,b.duration,b.cancellation,
+Cast ((JulianDay(pickup_time) - JulianDay(order_date)) * 24 * 60 As Integer) AS time_diff  
+FROM customer_orders AS a INNER JOIN driver_order AS b 
+ON a.order_id = b.order_id 
+WHERE b.pickup_time IS NOT NULL)
+GROUP BY order_id
+
+
+14) What was the average distance travelled for each customer?
+
+SELECT customer_id, AVG(distance) AS average_distance
+FROM (SELECT * FROM
+(SELECT *, (ROW_NUMBER() OVER(PARTITION BY order_id ORDER BY time_diff)) AS rnk
+FROM(
+SELECT a.*,b.driver_id,b.pickup_time,b.distance,b.duration,b.cancellation,
+Cast ((JulianDay(pickup_time) - JulianDay(order_date)) * 24 * 60 As Integer) AS time_diff  
+FROM customer_orders AS a INNER JOIN driver_order AS b 
+ON a.order_id = b.order_id 
+WHERE b.pickup_time IS NOT NULL
+)) WHERE rnk=1) GROUP BY customer_id
+
+
+15) What was the difference between the longest and shortest delivery times for all orders?
+
+SELECT MAX(duration)-MIN(duration) AS difference
+FROM driver_order do 
+WHERE duration IS NOT NULL 
+
+
+16) What was the average speed for each driver for each delivery and do you notice any trend for these values?
+
+SELECT order_id,driver_id,distance*1.0/duration AS speed FROM
+(SELECT *,
+CAST(TRIM(REPLACE(LOWER(distance),'km','')) AS DECIMAL(4,2)) AS distance,
+CAST(CASE WHEN duration like '%min%' THEN LTRIM(duration) ELSE duration END AS REAL) AS duration 
+FROM driver_order do 
+WHERE distance IS NOT NULL)
+
+
+17) What is successful delivery percentage for each driver?
+
+SELECT driver_id,(successful_orders*1.0/total_orders)*100 AS suc_del_perc 
+FROM
+(SELECT driver_id, SUM(del_info) AS successful_orders, COUNT(driver_id) AS total_orders
+FROM
+(SELECT driver_id,CASE WHEN cancellation like '%cancel%' THEN '0' ELSE '1' 
+END AS del_info
+FROM driver_order do)
+GROUP BY driver_id)
